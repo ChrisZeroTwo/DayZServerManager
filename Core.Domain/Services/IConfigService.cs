@@ -1,6 +1,6 @@
 ﻿// Path: Core/Domain/Services/IConfigService.cs
 // File: IConfigService.cs
-// Purpose: Öffentliche Schnittstelle des ConfigService: Laden von manager.json und server.json, read-only Zugriff.
+// Purpose: Öffentliche Schnittstelle des ConfigService (manager.json + server.json laden).
 
 using Core.Domain.DTOs;
 

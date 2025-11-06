@@ -1,6 +1,6 @@
 ﻿// Path: Core/Host/Program.cs
 // File: Program.cs
-// Purpose: Einstiegspunkt. DI aufbauen, ConfigService initialisieren, Testevent.
+// Purpose: DI aufbauen, Config laden, InstanceRegistry initialisieren, Testausgabe.
 
 using Core.Domain;
 using Core.Domain.Events;
@@ -18,19 +18,23 @@ public static class Program
         var bus = provider.GetRequiredService<IEventBus>();
         var log = provider.GetRequiredService<ILogService>();
         var cfg = provider.GetRequiredService<IConfigService>();
+        var reg = provider.GetRequiredService<IInstanceRegistry>();
 
         bus.Subscribe<DiscordNotifyEvent>(e =>
             log.Info($"DiscordNotify: {e.Title} - {e.Message} ({e.Level})"));
 
+        // Config initialisieren (./config/manager.json)
         var managerJson = Path.Combine(AppContext.BaseDirectory, "config", "manager.json");
         cfg.Initialize(managerJson);
 
-        var instances = cfg.GetInstances();
-        log.Info($"Instanzen geladen: {instances.Count}");
-        foreach (var i in instances)
-            log.Info($" - {i.Name} @ {i.ServerRoot}");
+        // Registry initialisieren und testen
+        reg.Initialize();
+        var all = reg.GetAll();
+        log.Info($"[Host] Registry enthält {all.Count} Instanz(en).");
+        foreach (var i in all)
+            log.Info($"[Host]   -> {i.Name}");
 
-        bus.Publish(new DiscordNotifyEvent("Manager", "Config geladen & Bootstrap abgeschlossen.", "info"));
+        bus.Publish(new DiscordNotifyEvent("Manager", "InstanceRegistry initialisiert.", "info"));
         Console.WriteLine("DayZ Server Manager Host läuft. [Enter] beendet.");
         Console.ReadLine();
     }

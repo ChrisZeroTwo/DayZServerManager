@@ -16,6 +16,7 @@
     <ProjectReference Include="..\Core.Domain\Core.Domain.csproj" />
     <ProjectReference Include="..\Core.Logging\Core.Logging.csproj" />
     <ProjectReference Include="..\Modules.ConfigService\Modules.ConfigService.csproj" />
+    <ProjectReference Include="..\Modules.InstanceRegistry\Modules.InstanceRegistry.csproj" />
   </ItemGroup>
 
 </Project>

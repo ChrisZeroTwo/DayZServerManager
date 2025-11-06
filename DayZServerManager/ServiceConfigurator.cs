@@ -1,12 +1,13 @@
 ﻿// Path: Core/Host/ServiceConfigurator.cs
 // File: ServiceConfigurator.cs
-// Purpose: DI-Registrierung für Kern-Services (EventBus, Logging) und ConfigService.
+// Purpose: DI-Registrierung inkl. ConfigService + InstanceRegistry.
 
 using Core.Domain;
 using Core.Domain.Services;
 using Core.Logging;
 using Microsoft.Extensions.DependencyInjection;
-using Modules.ConfigService; // Implementierung
+using Modules.ConfigService;
+using Modules.InstanceRegistry;
 
 namespace Core.Host;
 
@@ -19,8 +20,9 @@ public static class ServiceConfigurator
         services.AddSingleton<IEventBus, EventBus>();
         services.AddSingleton<ILogService, ConsoleLogService>();
 
-        // Module
-        services.AddSingleton<IConfigService, ConfigService>();
+        // Vollqualifiziert registrieren, falls VS noch zweifelt:
+        services.AddSingleton<Core.Domain.Services.IConfigService, Modules.ConfigService.ConfigService>();
+        services.AddSingleton<Core.Domain.Services.IInstanceRegistry, Modules.InstanceRegistry.InstanceRegistry>();
 
         return services.BuildServiceProvider();
     }
