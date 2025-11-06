@@ -1,9 +1,19 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.14.36623.8 d17.14
+VisualStudioVersion = 17.14.36623.8
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DayZServerManager", "DayZServerManager\DayZServerManager.csproj", "{FEAE9922-5DE3-4AF0-B2EF-0CFE4EF6092B}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Core.Host", "DayZServerManager\Core.Host.csproj", "{FEAE9922-5DE3-4AF0-B2EF-0CFE4EF6092B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Core.Common", "Core.Common\Core.Common.csproj", "{20648C40-96D8-47BB-8725-492CFD87F56C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Core.Logging", "Core.Logging\Core.Logging.csproj", "{1CE617DD-FAAA-47D6-AC37-1C2789EA3851}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Core.Domain", "Core.Domain\Core.Domain.csproj", "{3275FCF4-6C70-4629-8FC5-6450FF88616F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Core.Infrastructure", "Core.Infrastructure\Core.Infrastructure.csproj", "{B5B52B87-B2FC-4F27-9A64-F519FA19CCA9}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Modules.ConfigService", "Modules.ConfigService\Modules.ConfigService.csproj", "{27324922-624F-4A06-BBFE-288DBE3AF01D}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -15,6 +25,26 @@ Global
 		{FEAE9922-5DE3-4AF0-B2EF-0CFE4EF6092B}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{FEAE9922-5DE3-4AF0-B2EF-0CFE4EF6092B}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{FEAE9922-5DE3-4AF0-B2EF-0CFE4EF6092B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{20648C40-96D8-47BB-8725-492CFD87F56C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{20648C40-96D8-47BB-8725-492CFD87F56C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{20648C40-96D8-47BB-8725-492CFD87F56C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{20648C40-96D8-47BB-8725-492CFD87F56C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1CE617DD-FAAA-47D6-AC37-1C2789EA3851}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1CE617DD-FAAA-47D6-AC37-1C2789EA3851}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1CE617DD-FAAA-47D6-AC37-1C2789EA3851}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1CE617DD-FAAA-47D6-AC37-1C2789EA3851}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3275FCF4-6C70-4629-8FC5-6450FF88616F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3275FCF4-6C70-4629-8FC5-6450FF88616F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3275FCF4-6C70-4629-8FC5-6450FF88616F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3275FCF4-6C70-4629-8FC5-6450FF88616F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B5B52B87-B2FC-4F27-9A64-F519FA19CCA9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B5B52B87-B2FC-4F27-9A64-F519FA19CCA9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B5B52B87-B2FC-4F27-9A64-F519FA19CCA9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B5B52B87-B2FC-4F27-9A64-F519FA19CCA9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{27324922-624F-4A06-BBFE-288DBE3AF01D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{27324922-624F-4A06-BBFE-288DBE3AF01D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{27324922-624F-4A06-BBFE-288DBE3AF01D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{27324922-624F-4A06-BBFE-288DBE3AF01D}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
