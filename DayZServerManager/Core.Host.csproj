@@ -16,7 +16,13 @@
     <ProjectReference Include="..\Core.Domain\Core.Domain.csproj" />
     <ProjectReference Include="..\Core.Logging\Core.Logging.csproj" />
     <ProjectReference Include="..\Modules.ConfigService\Modules.ConfigService.csproj" />
+    <ProjectReference Include="..\Modules.DiscordNotifier\Modules.DiscordNotifier.csproj" />
     <ProjectReference Include="..\Modules.InstanceRegistry\Modules.InstanceRegistry.csproj" />
+    <ProjectReference Include="..\Modules.ModUpdateService\Modules.ModUpdateService.csproj" />
+    <ProjectReference Include="..\Modules.Monitoring\Modules.Monitoring.csproj" />
+    <ProjectReference Include="..\Modules.ProcessControl\Modules.ProcessControl.csproj" />
+    <ProjectReference Include="..\Modules.RconService\Modules.RconService.csproj" />
+    <ProjectReference Include="..\Modules.RestartOrchestrator\Modules.RestartOrchestrator.csproj" />
   </ItemGroup>
 
 </Project>

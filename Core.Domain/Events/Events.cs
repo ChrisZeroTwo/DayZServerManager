@@ -2,6 +2,9 @@
 // File: Events.cs
 // Purpose: Domain-Events für Instanz-Lebenszyklus, Updates, RCON und Integrationen.
 
+using System;
+using System.Collections.Generic;
+
 namespace Core.Domain.Events;
 
 // Lebenszyklus
