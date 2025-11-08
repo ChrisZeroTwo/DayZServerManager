@@ -1,9 +1,12 @@
 ﻿// Path: Core/Host/Program.cs
 // File: Program.cs
-// Purpose: CLI + AutoStart + Services starten + DiscordNotifier initialisieren (vollständige Version).
+// Purpose: CLI: start/stop/kill <name|all> | provision <name|all> | mods dl|install <name|all> | ls | reload | exit
+// - Robuste Namensauflösung (case-insensitive Match gegen Registry)
+// - Unterstützt Sync- und Async-Methoden im IProcessController
+// - Klare Erfolg-/Fehlermeldungen, inkl. Hinweis wenn keine Instanzen gefunden
 
+using System.Reflection;
 using Core.Domain;
-using Core.Domain.Events;
 using Core.Domain.Services;
 using Core.Logging;
 using Microsoft.Extensions.DependencyInjection;
@@ -12,50 +15,34 @@ namespace Core.Host;
 
 public static class Program
 {
-    public static void Main(string[] args)
+    public static async Task Main(string[] args)
     {
         var sp = ServiceConfigurator.Configure();
-        var bus = sp.GetRequiredService<IEventBus>();
         var log = sp.GetRequiredService<ILogService>();
-        var cfg = sp.GetRequiredService<IConfigService>();
-        var reg = sp.GetRequiredService<IInstanceRegistry>();
         var proc = sp.GetRequiredService<IProcessController>();
-        var mon = sp.GetRequiredService<IMonitoringService>();
-        var rcon = sp.GetRequiredService<IRconService>();
-        var rst = sp.GetRequiredService<IRestartOrchestrator>();
-        var mus = sp.GetRequiredService<IModUpdateService>();
-        var dsn = sp.GetRequiredService<IDiscordNotifier>();
+        var reg = sp.GetRequiredService<IInstanceRegistry>();
+        var cfg = sp.GetRequiredService<IConfigService>();
+        var prov = sp.GetRequiredService<IProvisioningService>();
 
-        bus.Subscribe<DiscordNotifyEvent>(e => log.Info($"DiscordNotify: {e.Title} - {e.Message} ({e.Level})"));
-
-        var managerJson = Path.Combine(AppContext.BaseDirectory, "config", "manager.json");
-        cfg.Initialize(managerJson);
-        dsn.Initialize();   // Discord-Filter/Webhook aus manager.json lesen
+        // --- Bootstrap: Config laden, Registry füllen, Hintergrunddienste starten ---
+        cfg.Initialize("config\\manager.json");          // Pfad ggf. anpassen (siehe Hinweis unten)
         reg.Initialize();
 
-        // === AutoStart ===
-        var toAutoStart = reg.GetAll().Where(i => i.AutoStart).ToList();
-        if (toAutoStart.Count > 0)
-        {
-            log.Info($"AutoStart: {toAutoStart.Count} Instanz(en) werden gestartet …");
-            foreach (var i in toAutoStart)
-            {
-                log.Info($"AutoStart -> {i.Name}");
-                var ok = proc.Start(i.Name);
-                if (!ok) log.Warn($"AutoStart: Start von '{i.Name}' fehlgeschlagen.");
-                Thread.Sleep(TimeSpan.FromSeconds(3));
-            }
-        }
-        else
-        {
-            log.Info("AutoStart: Keine Instanzen mit AutoStart=true gefunden.");
-        }
-        // === /AutoStart ===
+        var updateSvc = sp.GetRequiredService<IModUpdateService>();
+        updateSvc.Start();
 
+        var mon = sp.GetRequiredService<IMonitoringService>();
         mon.Start();
-        mus.Start();
 
-        log.Info("CLI: ls | start/stop/kill <name|all> | reload | lock/unlock <name> | bc <name> <msg> | kickall/shutdown <name> | rcon <name> <cmd> | restart <name> [sec] [reason] | cancel <name> | modcheck | modupdate <name|all> | exit");
+        var discord = sp.GetRequiredService<IDiscordNotifier>();
+        discord.Initialize();
+
+        var web = sp.GetRequiredService<IWebApiService>();
+        web.Start(); // respektiert intern Enable/Port aus der Config
+                     // --- Ende Bootstrap ---
+
+        log.Info("DayZ Server Manager Host läuft. CLI bereit.");
+        PrintHelp();
 
         while (true)
         {
@@ -63,103 +50,255 @@ public static class Program
             var line = Console.ReadLine();
             if (string.IsNullOrWhiteSpace(line)) continue;
 
-            var parts = line.Trim().Split(' ', 4, StringSplitOptions.RemoveEmptyEntries);
+            var parts = line.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
             var cmd = parts[0].ToLowerInvariant();
-            var a1 = parts.Length > 1 ? parts[1].Trim() : string.Empty;
-            var a2 = parts.Length > 2 ? parts[2].Trim() : string.Empty;
-            var a3 = parts.Length > 3 ? parts[3].Trim() : string.Empty;
 
-            switch (cmd)
+            try
             {
-                case "ls":
-                    foreach (var i in reg.GetAll())
-                    {
-                        var running = proc.IsRunning(i.Name) ? $"RUN (PID {proc.GetPid(i.Name)})" : "STOP";
-                        var scheduled = (rst.IsScheduled(i.Name) ? " RESTART* " : "");
-                        Console.WriteLine($"- {i.Name}  [{running}]{scheduled}");
-                    }
-                    break;
+                switch (cmd)
+                {
+                    case "exit":
+                    case "quit":
+                        return;
 
-                case "start": ExecuteFor(a1, reg, name => proc.Start(name), log); break;
-                case "stop": ExecuteFor(a1, reg, name => proc.Stop(name, kill: false), log); break;
-                case "kill": ExecuteFor(a1, reg, name => proc.Stop(name, kill: true), log); break;
-
-                case "reload":
-                    log.Info("Reload...");
-                    cfg.Reload();
-                    reg.Initialize();
-                    dsn.Initialize(); // Discord-Config neu einlesen
-                    log.Info("Reload ok.");
-                    break;
-
-                case "lock": _ = rcon.LockAsync(a1); break;
-                case "unlock": _ = rcon.UnlockAsync(a1); break;
-                case "bc": _ = rcon.BroadcastAsync(a1, a3.Length > 0 ? $"{a2} {a3}" : a2); break;
-                case "kickall": _ = rcon.KickAllAsync(a1); break;
-                case "shutdown": _ = rcon.ShutdownGracefulAsync(a1); break;
-                case "rcon": _ = rcon.SendRawAsync(a1, a3.Length > 0 ? $"{a2} {a3}" : a2); break;
-
-                case "restart":
-                    {
-                        if (string.IsNullOrWhiteSpace(a1)) { log.Warn("restart <name> [seconds] [reason]"); break; }
-                        var seconds = 60;
-                        if (int.TryParse(a2, out var s) && s > 0) seconds = s;
-                        var reason = string.IsNullOrWhiteSpace(a3) ? "Scheduled restart" : a3;
-                        var ok = rst.ScheduleRestart(a1, visibleSeconds: seconds, totalSeconds: seconds, reason: reason, autoStartAfter: true);
-                        if (!ok) log.Warn($"Restart konnte nicht geplant werden für '{a1}'.");
+                    case "help":
+                        PrintHelp();
                         break;
-                    }
 
-                case "cancel":
-                    if (!rst.CancelRestart(a1))
-                        log.Warn($"Kein Restart für '{a1}' geplant.");
-                    break;
+                    case "reload":
+                        cfg.Reload();
+                        log.Info("Reload ok.");
+                        break;
 
-                case "modcheck":
-                    _ = mus.CheckNowAsync();
-                    break;
+                    case "ls":
+                        ListInstances(reg, log);
+                        break;
 
-                case "modupdate":
-                    if (string.Equals(a1, "all", StringComparison.OrdinalIgnoreCase))
-                    {
-                        foreach (var i in reg.GetAll())
-                            _ = mus.UpdateInstanceModsAsync(i.Name);
-                    }
-                    else if (!string.IsNullOrWhiteSpace(a1))
-                    {
-                        _ = mus.UpdateInstanceModsAsync(a1);
-                    }
-                    else
-                    {
-                        log.Warn("Nutzung: modupdate <name|all>");
-                    }
-                    break;
+                    case "start":
+                        await HandleStartStopAsync(proc, reg, start: true, parts.Skip(1).ToArray(), log);
+                        break;
 
-                case "exit":
-                    mon.Stop();
-                    mus.Stop();
-                    return;
+                    case "stop":
+                        await HandleStartStopAsync(proc, reg, start: false, parts.Skip(1).ToArray(), log);
+                        break;
 
-                default:
-                    log.Warn("Unbekannter Befehl.");
-                    break;
+                    case "kill":
+                        await HandleKillAsync(proc, reg, parts.Skip(1).ToArray(), log);
+                        break;
+
+                    case "provision":
+                        await HandleProvisionAsync(prov, reg, parts.Skip(1).ToArray(), log);
+                        break;
+
+                    case "mods":
+                        await HandleModsAsync(prov, reg, parts.Skip(1).ToArray(), log);
+                        break;
+
+                    default:
+                        log.Warn("Unbekannter Befehl.");
+                        PrintHelp();
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                log.Warn($"CLI-Fehler: {ex.Message}");
             }
         }
     }
 
-    private static void ExecuteFor(string arg, IInstanceRegistry reg, Func<string, bool> action, ILogService log)
+    private static void PrintHelp()
     {
-        if (string.Equals(arg, "all", StringComparison.OrdinalIgnoreCase))
+        Console.WriteLine("CLI: start/stop/kill <name|all> | provision <name|all> | mods dl|install <name|all> | ls | reload | exit");
+    }
+
+    private static void ListInstances(IInstanceRegistry reg, ILogService log)
+    {
+        var all = reg.GetAll().ToList();
+        if (all.Count == 0) { log.Warn("Keine Instanzen in der Registry."); return; }
+        log.Info($"Instanzen geladen: {all.Count}");
+        foreach (var i in all) log.Info($" - {i.Name} @ {i.ServerRoot}");
+    }
+
+    // -------- Commands --------
+
+    private static async Task HandleStartStopAsync(IProcessController proc, IInstanceRegistry reg, bool start, string[] args, ILogService log)
+    {
+        if (!TryParseTarget(args, out var rawTarget))
         {
-            foreach (var i in reg.GetAll())
-                action(i.Name);
+            log.Warn("Nutzung: start/stop <name|all>");
             return;
         }
-        if (string.IsNullOrWhiteSpace(arg)) { log.Warn("Bitte einen Instanznamen oder 'all' angeben."); return; }
 
-        var inst = reg.GetByName(arg);
-        if (inst is null) { log.Warn($"Unbekannte Instanz '{arg}'. Mit 'ls' anzeigen lassen."); return; }
+        var targets = ResolveTargets(reg, rawTarget);
+        if (targets.Count == 0)
+        {
+            log.Warn(rawTarget.Equals("all", StringComparison.OrdinalIgnoreCase)
+                ? "Keine Instanzen in der Registry."
+                : $"Instanz nicht gefunden: '{rawTarget}'. Versuche 'ls'.");
+            return;
+        }
 
-        action(inst.Name);
+        foreach (var name in targets)
+        {
+            var ok = await InvokeControllerAsync(proc,
+                start
+                    ? new[] { "StartInstanceAsync", "StartInstance", "StartAsync", "Start" }
+                    : new[] { "StopInstanceAsync", "StopInstance", "StopAsync", "Stop" },
+                name);
+
+            if (ok) log.Info($"{(start ? "Start" : "Stop")} {name} ok.");
+            else log.Warn($"{(start ? "Start" : "Stop")} {name} fehlgeschlagen (Methode nicht gefunden/Fehler).");
+        }
+    }
+
+    private static async Task HandleKillAsync(IProcessController proc, IInstanceRegistry reg, string[] args, ILogService log)
+    {
+        if (!TryParseTarget(args, out var rawTarget))
+        {
+            log.Warn("Nutzung: kill <name|all>");
+            return;
+        }
+
+        var targets = ResolveTargets(reg, rawTarget);
+        if (targets.Count == 0)
+        {
+            log.Warn(rawTarget.Equals("all", StringComparison.OrdinalIgnoreCase)
+                ? "Keine Instanzen in der Registry."
+                : $"Instanz nicht gefunden: '{rawTarget}'. Versuche 'ls'.");
+            return;
+        }
+
+        foreach (var name in targets)
+        {
+            var ok = await InvokeControllerAsync(proc,
+                new[] { "KillInstanceAsync", "KillInstance", "KillAsync", "Kill" },
+                name);
+
+            if (ok) log.Info($"Kill {name} ok.");
+            else log.Warn($"Kill {name} fehlgeschlagen (Methode nicht gefunden/Fehler).");
+        }
+    }
+
+    private static async Task HandleProvisionAsync(IProvisioningService prov, IInstanceRegistry reg, string[] args, ILogService log)
+    {
+        if (!TryParseTarget(args, out var rawTarget))
+        {
+            log.Warn("Nutzung: provision <name|all>");
+            return;
+        }
+
+        var targets = ResolveTargets(reg, rawTarget);
+        if (targets.Count == 0)
+        {
+            log.Warn(rawTarget.Equals("all", StringComparison.OrdinalIgnoreCase)
+                ? "Keine Instanzen in der Registry."
+                : $"Instanz nicht gefunden: '{rawTarget}'. Versuche 'ls'.");
+            return;
+        }
+
+        foreach (var name in targets)
+        {
+            log.Info($"[Provision] -> {name}");
+
+            var ok1 = await prov.EnsureServerUpToDateAsync(name);
+            if (!ok1) { log.Warn($"[Provision] {name}: Server-Update fehlgeschlagen."); continue; }
+
+            var ok2 = await prov.EnsureInstanceStructureAsync(name);
+            if (!ok2) { log.Warn($"[Provision] {name}: Instanzstruktur fehlgeschlagen."); continue; }
+
+            await prov.DownloadModsAsync(name);
+            await prov.InstallModsToInstanceAsync(name, preferJunction: false);
+            log.Info($"[Provision] {name}: abgeschlossen.");
+        }
+    }
+
+    private static async Task HandleModsAsync(IProvisioningService prov, IInstanceRegistry reg, string[] args, ILogService log)
+    {
+        if (args.Length < 2)
+        {
+            log.Warn("Nutzung: mods dl|install <name|all>");
+            return;
+        }
+
+        var action = args[0].ToLowerInvariant();
+        var rawTarget = string.Join(' ', args.Skip(1)).Trim();
+
+        var targets = ResolveTargets(reg, rawTarget);
+        if (targets.Count == 0)
+        {
+            log.Warn(rawTarget.Equals("all", StringComparison.OrdinalIgnoreCase)
+                ? "Keine Instanzen in der Registry."
+                : $"Instanz nicht gefunden: '{rawTarget}'. Versuche 'ls'.");
+            return;
+        }
+
+        foreach (var name in targets)
+        {
+            switch (action)
+            {
+                case "dl":
+                case "download":
+                    var n = await prov.DownloadModsAsync(name);
+                    log.Info($"[Mods] {name}: {n} Mod(s) geprüft/geladen.");
+                    break;
+
+                case "install":
+                    var m = await prov.InstallModsToInstanceAsync(name, preferJunction: false);
+                    log.Info($"[Mods] {name}: {m} Mod(s) installiert/aktualisiert.");
+                    break;
+
+                default:
+                    log.Warn("Nutzung: mods dl|install <name|all>");
+                    return;
+            }
+        }
+    }
+
+    // -------- Helpers --------
+
+    private static bool TryParseTarget(string[] args, out string target)
+    {
+        if (args.Length == 0) { target = ""; return false; }
+        target = string.Join(' ', args).Trim();
+        return !string.IsNullOrEmpty(target);
+    }
+
+    // Liefert eine validierte Namensliste:
+    // - "all" -> alle Registry-Namen
+    // - sonst: case-insensitive Match gegen Registry-Namen
+    private static List<string> ResolveTargets(IInstanceRegistry reg, string rawTarget)
+    {
+        var all = reg.GetAll().Select(i => i.Name).ToList();
+        if (rawTarget.Equals("all", StringComparison.OrdinalIgnoreCase))
+            return all;
+
+        var match = all.FirstOrDefault(n => string.Equals(n, rawTarget, StringComparison.OrdinalIgnoreCase));
+        return match is null ? new List<string>() : new List<string> { match };
+    }
+
+    /// Flexibler Methodenaufruf (unterstützt Sync und Async). true bei Erfolg.
+    private static async Task<bool> InvokeControllerAsync(object controller, string[] candidateMethodNames, string instanceName)
+    {
+        var t = controller.GetType();
+        foreach (var name in candidateMethodNames)
+        {
+            var mi = t.GetMethod(name, BindingFlags.Instance | BindingFlags.Public, new[] { typeof(string) });
+            if (mi == null) continue;
+
+            try
+            {
+                var result = mi.Invoke(controller, new object[] { instanceName });
+                if (result is Task task)
+                    await task; // Async-Variante
+
+                return true;
+            }
+            catch
+            {
+                // probiere nächsten Kandidaten
+            }
+        }
+        return false;
     }
 }

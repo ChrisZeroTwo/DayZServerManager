@@ -1,0 +1,19 @@
+﻿<!-- Path: Modules.WebApi/Modules.WebApi.csproj -->
+<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<TargetFramework>net8.0</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+	</PropertyGroup>
+
+	<!-- ASP.NET Core-Minimal-API nutzbar machen -->
+	<ItemGroup>
+		<FrameworkReference Include="Microsoft.AspNetCore.App" />
+	</ItemGroup>
+
+	<!-- Verweise auf unsere Kernprojekte -->
+	<ItemGroup>
+		<ProjectReference Include="..\Core.Domain\Core.Domain.csproj" />
+		<ProjectReference Include="..\Core.Logging\Core.Logging.csproj" />
+	</ItemGroup>
+</Project>

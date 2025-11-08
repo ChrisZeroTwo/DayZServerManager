@@ -1,6 +1,6 @@
 ﻿// Path: Core/Domain/DTOs/ManagerConfig.cs
 // File: ManagerConfig.cs
-// Purpose: manager.json – inkl. Monitoring- und Discord-Optionen (Filter pro Eventtyp). 'discordWebhook' bleibt als Fallback.
+// Purpose: DTO für manager.json – inkl. Steam, Discord, WebAPI, Monitoring und Update-Intervall.
 
 using System.Text.Json.Serialization;
 
@@ -12,15 +12,18 @@ public class ManagerConfig
     [JsonPropertyName("modCachePath")] public string ModCachePath { get; set; } = string.Empty;
     [JsonPropertyName("steamCmdPath")] public string SteamCmdPath { get; set; } = string.Empty;
 
+    // NEU: Intervall für Auto-Update-Check (Minuten)
+    [JsonPropertyName("updateCheckIntervalMinutes")] public int UpdateCheckIntervalMinutes { get; set; } = 15;
+
+    [JsonPropertyName("steam")] public SteamCredentials? Steam { get; set; }
+
     [JsonPropertyName("checkIntervalSeconds")] public int CheckIntervalSeconds { get; set; } = 10;
     [JsonPropertyName("modCheckIntervalSeconds")] public int ModCheckIntervalSeconds { get; set; } = 300;
 
-    // Monitoring
     [JsonPropertyName("freezeThresholdSeconds")] public int FreezeThresholdSeconds { get; set; } = 120;
     [JsonPropertyName("monitorDebounceSeconds")] public int MonitorDebounceSeconds { get; set; } = 300;
     [JsonPropertyName("monitorOnlyWhenRunning")] public bool MonitorOnlyWhenRunning { get; set; } = true;
 
-    // Discord (neu) + Fallback
     [JsonPropertyName("discordWebhook")] public string? DiscordWebhook { get; set; }
     [JsonPropertyName("discord")] public DiscordOptions? Discord { get; set; }
 
@@ -52,4 +55,11 @@ public class DiscordNotifyFlags
     [JsonPropertyName("instanceNeedsRestart")] public bool InstanceNeedsRestart { get; set; } = true;
     [JsonPropertyName("instanceUpdateCompleted")] public bool InstanceUpdateCompleted { get; set; } = true;
     [JsonPropertyName("rconCommands")] public bool RconCommands { get; set; } = false;
+}
+
+public class SteamCredentials
+{
+    [JsonPropertyName("username")] public string? Username { get; set; }
+    [JsonPropertyName("password")] public string? Password { get; set; }
+    [JsonPropertyName("guardCode")] public string? GuardCode { get; set; }
 }

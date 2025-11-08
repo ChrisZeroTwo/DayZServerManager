@@ -21,8 +21,10 @@
     <ProjectReference Include="..\Modules.ModUpdateService\Modules.ModUpdateService.csproj" />
     <ProjectReference Include="..\Modules.Monitoring\Modules.Monitoring.csproj" />
     <ProjectReference Include="..\Modules.ProcessControl\Modules.ProcessControl.csproj" />
+    <ProjectReference Include="..\Modules.ProvisioningService\Modules.ProvisioningService.csproj" />
     <ProjectReference Include="..\Modules.RconService\Modules.RconService.csproj" />
     <ProjectReference Include="..\Modules.RestartOrchestrator\Modules.RestartOrchestrator.csproj" />
+    <ProjectReference Include="..\Modules.WebApi\Modules.WebApi.csproj" />
   </ItemGroup>
 
 </Project>

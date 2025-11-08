@@ -1,6 +1,6 @@
 ﻿// Path: Core/Host/ServiceConfigurator.cs
 // File: ServiceConfigurator.cs
-// Purpose: DI – inkl. DiscordNotifier registrieren und verwendete Services bündeln.
+// Purpose: DI – inkl. ProvisioningService.
 
 using Core.Domain;
 using Core.Domain.Services;
@@ -14,6 +14,8 @@ using Modules.RconService;
 using Modules.RestartOrchestrator;
 using Modules.ModUpdateService;
 using Modules.DiscordNotifier;
+using Modules.WebApi;
+using Modules.ProvisioningService;
 
 namespace Core.Host;
 
@@ -43,9 +45,11 @@ public static class ServiceConfigurator
                 dryRun: true));
         services.AddSingleton<IRestartOrchestrator, RestartOrchestrator>();
         services.AddSingleton<IModUpdateService, ModUpdateService>();
-
-        // Discord Notifier
         services.AddSingleton<IDiscordNotifier, DiscordNotifier>();
+        services.AddSingleton<IWebApiService, WebApiService>();
+
+        // Provisioning (neu mit IProcessController + IEventBus)
+        services.AddSingleton<IProvisioningService, ProvisioningService>();
 
         return services.BuildServiceProvider();
     }
