@@ -1,6 +1,6 @@
 ﻿// Path: Modules/ProcessControl/ProcessController.cs
 // File: ProcessController.cs
-// Purpose: Start/Stop von DayZ-Instanzen. Nutzt IConfigService (DTOs), publiziert Events.
+// Purpose: Start/Stop von DayZ-Instanzen. Direkter EXE-Start (kein cmd), sauberes Quoting, ausführliche Diagnose.
 
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -22,9 +22,7 @@ public class ProcessController : IProcessController
     private readonly ILogService _log;
     private readonly IEventBus _bus;
 
-    // Merkt sich laufende Prozesse pro Instanz
     private readonly ConcurrentDictionary<string, Process> _running = new(StringComparer.OrdinalIgnoreCase);
-    // Guard: verhindert parallele Starts derselben Instanz
     private readonly ConcurrentDictionary<string, byte> _starting = new(StringComparer.OrdinalIgnoreCase);
 
     public ProcessController(IConfigService config, ILogService log, IEventBus bus)
@@ -41,8 +39,6 @@ public class ProcessController : IProcessController
             _log.Warn($"[ProcessControl] Start ignoriert – Instanz '{instanceName}' läuft bereits (PID={GetPid(instanceName)}).");
             return false;
         }
-
-        // Doppelstart-Guard (z. B. CLI + Orchestrator gleichzeitig)
         if (!_starting.TryAdd(instanceName, 1))
         {
             _log.Warn($"[ProcessControl] Start ignoriert – Instanz '{instanceName}' wird bereits gestartet.");
@@ -59,10 +55,8 @@ public class ProcessController : IProcessController
 
         try
         {
-            // 1) Runtime-Config vorbereiten (editierbare -> runtime kopieren)
             PrepareRuntimeConfig(inst);
 
-            // 2) Exe und Startinfo bestimmen
             var exe = ResolveServerExe(inst.ServerRoot);
             if (exe is null)
             {
@@ -73,61 +67,44 @@ public class ProcessController : IProcessController
 
             var args = BuildCommandLine(inst);
 
-            // Sichtbares Fenster erzwingen:
-            // cmd.exe /c start "<Fenstertitel>" "DayZServer_x64.exe" <args>
-            var cmd = Environment.GetEnvironmentVariable("COMSPEC") ?? "cmd.exe";
-            var title = $"DayZ {inst.Name}";
+            // Diagnosedatei (für manuellen Test)
+            TryWriteLaunchScript(inst.ServerRoot, exe, args);
+
+            // Direkter Start – KEIN cmd/cmd /k
             var psi = new ProcessStartInfo
             {
-                FileName = cmd,
-                Arguments = $"/c start \"{title}\" \"{Path.GetFileName(exe)}\" {args}",
+                FileName = exe,
+                Arguments = args,
                 WorkingDirectory = inst.ServerRoot,
-                UseShellExecute = true,
+                UseShellExecute = true,           // eigenes Fenster
                 CreateNoWindow = false,
                 WindowStyle = ProcessWindowStyle.Normal,
                 Verb = "open"
             };
 
-            _log.Info($"[ProcessControl] Starte '{instanceName}' [via start] ␦ {Path.GetFileName(exe)} {args}");
-            var starter = Process.Start(psi);
-            if (starter is null)
+            _log.Info($"[ProcessControl] Starte '{instanceName}' → {exe} {args}");
+            var p = Process.Start(psi);
+            if (p is null)
             {
                 _starting.TryRemove(instanceName, out _);
                 _log.Error($"[ProcessControl] Start fehlgeschlagen: '{instanceName}'.");
                 return false;
             }
 
-            // Kurze Wartezeit, dann DayZ-Child-Prozess anhand Exe-Pfad suchen & registrieren (synchron, kein await)
-            Process? serverProc = null;
-            for (int i = 0; i < 20 && serverProc is null; i++) // bis ~2s
+            p.EnableRaisingEvents = true;
+            p.Exited += (_, __) =>
             {
-                Thread.Sleep(100);
-                serverProc = FindServerProcessByExe(exe);
-            }
+                Process _removedProc;
+                _running.TryRemove(instanceName, out _removedProc);
+                _bus.Publish(new InstanceStoppedEvent(instanceName, "exited"));
+            };
 
-            if (serverProc is null)
-            {
-                // Fallback: Tracke zumindest den gestarteten cmd-Prozess
-                _log.Warn("[ProcessControl] Konnte DayZ-Prozess nach Start nicht finden – tracke Starter-Prozess (cmd) als Fallback.");
-                _running[instanceName] = starter;
-            }
-            else
-            {
-                _running[instanceName] = serverProc;
-                _log.Info($"[ProcessControl] DayZ-Prozess erfasst (PID={serverProc.Id}).");
-                serverProc.EnableRaisingEvents = true;
-                serverProc.Exited += (_, __) =>
-                {
-                    _running.TryRemove(instanceName, out var _removedProc);
-                    _bus.Publish(new InstanceStoppedEvent(instanceName, "exited"));
-                };
-            }
-
+            _running[instanceName] = p;
             _bus.Publish(new InstanceStartedEvent(instanceName, DateTime.Now));
-            _bus.Publish(new DiscordNotifyEvent("Instance Started", $"'{instanceName}' (PID {_running[instanceName].Id})", "info"));
+            _bus.Publish(new DiscordNotifyEvent("Instance Started", $"'{instanceName}' (PID {p.Id})", "info"));
 
-            // Health-Probe asynchron starten (früher Exit / Log-Erstellung)
-            _ = Task.Run(() => HealthProbeAsync(inst, _running[instanceName]));
+            // Health-Probe (prüft Log/Exit; kein Fallback mehr)
+            _ = Task.Run(() => HealthProbeAsync(inst, p));
 
             return true;
         }
@@ -146,7 +123,8 @@ public class ProcessController : IProcessController
     {
         if (!_running.TryGetValue(instanceName, out var p) || p.HasExited)
         {
-            _running.TryRemove(instanceName, out var _removedProc1);
+            Process _removed;
+            _running.TryRemove(instanceName, out _removed);
             _log.Warn($"[ProcessControl] Stop: Instanz '{instanceName}' läuft nicht.");
             return false;
         }
@@ -156,7 +134,7 @@ public class ProcessController : IProcessController
             if (kill)
             {
                 _log.Warn($"[ProcessControl] Erzwinge Kill für '{instanceName}' (PID {p.Id}).");
-                p.Kill(entireProcessTree: true); // schließt auch gestartete Childs
+                p.Kill(entireProcessTree: true);
             }
             else
             {
@@ -173,7 +151,8 @@ public class ProcessController : IProcessController
         }
         finally
         {
-            _running.TryRemove(instanceName, out var _removedProc2);
+            Process _removed2;
+            _running.TryRemove(instanceName, out _removed2);
             _bus.Publish(new InstanceStoppedEvent(instanceName, kill ? "killed" : "stopped"));
             _bus.Publish(new DiscordNotifyEvent("Instance Stopped", $"'{instanceName}' beendet.", "warn"));
         }
@@ -182,14 +161,10 @@ public class ProcessController : IProcessController
     }
 
     public bool IsRunning(string instanceName)
-    {
-        return _running.TryGetValue(instanceName, out var p) && !p.HasExited;
-    }
+        => _running.TryGetValue(instanceName, out var p) && !p.HasExited;
 
     public int? GetPid(string instanceName)
-    {
-        return _running.TryGetValue(instanceName, out var p) && !p.HasExited ? p.Id : null;
-    }
+        => _running.TryGetValue(instanceName, out var p) && !p.HasExited ? p.Id : null;
 
     // --- Helpers ---
 
@@ -237,7 +212,6 @@ public class ProcessController : IProcessController
 
     private static string BuildCommandLine(InstanceInfo inst)
     {
-        // Helfer: Absolutpfade sicherstellen
         static string Abs(string? p, string? baseDir = null)
         {
             if (string.IsNullOrWhiteSpace(p)) return string.Empty;
@@ -248,33 +222,31 @@ public class ProcessController : IProcessController
 
         var args = new List<string>();
 
-        // Ports (nur Port & QueryPort aus DTO)
+        // Ports
         if (inst.Launch?.Port > 0) args.Add($"-port={inst.Launch.Port}");
         if (inst.Launch?.QueryPort > 0) args.Add($"-queryport={inst.Launch.QueryPort}");
 
-        // profiles & config – IMMER absolut + gequotet
+        // profiles & config – absolut
         if (!string.IsNullOrWhiteSpace(inst.ProfilesPath))
             args.Add($"-profiles=\"{Abs(inst.ProfilesPath)}\"");
 
-        // aktives cfg-File (serverDZ.cfg / .active)
         if (!string.IsNullOrWhiteSpace(inst.RuntimeConfigPath))
             args.Add($"-config=\"{Abs(inst.RuntimeConfigPath)}\"");
 
-        // sinnvolle Defaults
+        // Defaults
         args.Add("-adminlog");
         args.Add("-freezecheck");
         args.Add("-dologs");
 
-        // MOD-Listen
+        // Mods
         var modList = BuildClientModList(inst);
         if (!string.IsNullOrWhiteSpace(modList))
-            args.Add($"\"-mod={modList}\""); // gesamte Zuweisung quoten
+            args.Add($"\"-mod={modList}\"");
 
         var serverModList = BuildServerModList(inst);
         if (!string.IsNullOrWhiteSpace(serverModList))
-            args.Add($"\"-serverMod={serverModList}\""); // optional
+            args.Add($"\"-serverMod={serverModList}\"");
 
-        // Zusätzliche Argumente aus Launch (falls gesetzt)
         if (!string.IsNullOrWhiteSpace(inst.Launch?.AdditionalArgs))
             args.Add(inst.Launch.AdditionalArgs!.Trim());
 
@@ -321,7 +293,6 @@ public class ProcessController : IProcessController
         return string.Join(';', serverMods);
     }
 
-    // --- Health-Probe nach Start: prüft Exit & Log-Erstellung (dynamisches Timeout je nach Mod-Anzahl) ---
     private async Task HealthProbeAsync(InstanceInfo inst, Process p)
     {
         try
@@ -329,8 +300,8 @@ public class ProcessController : IProcessController
             await Task.Delay(2000);
             if (p.HasExited)
             {
-                _log.Warn($"[ProcessControl] Prozess für '{inst.Name}' endete kurz nach Start. ExitCode={p.ExitCode}.");
-                _running.TryRemove(inst.Name, out var _removedProc);
+                Process _removed;
+                _running.TryRemove(inst.Name, out _removed);
                 _bus.Publish(new InstanceStoppedEvent(inst.Name, $"exited({p.ExitCode})"));
                 return;
             }
@@ -343,7 +314,7 @@ public class ProcessController : IProcessController
 
             var found = false;
             var elapsed = 0;
-            var stepMs = 500;
+            const int stepMs = 500;
 
             while (elapsed < maxWaitSec * 1000)
             {
@@ -356,8 +327,8 @@ public class ProcessController : IProcessController
 
                 if (p.HasExited)
                 {
-                    _log.Warn($"[ProcessControl] Prozess '{inst.Name}' beendet sich während Startphase. ExitCode={p.ExitCode}.");
-                    _running.TryRemove(inst.Name, out var _removedProc2);
+                    Process _removed2;
+                    _running.TryRemove(inst.Name, out _removed2);
                     _bus.Publish(new InstanceStoppedEvent(inst.Name, $"exited({p.ExitCode})"));
                     return;
                 }
@@ -379,38 +350,20 @@ public class ProcessController : IProcessController
         }
     }
 
-    // Sucht DayZ-Serverprozess über den Exe-Pfad
-    private static Process? FindServerProcessByExe(string exeFullPath)
+    // --- Diagnose: Startskript schreiben ---
+    private void TryWriteLaunchScript(string serverRoot, string exe, string args)
     {
-        static string SafeMainModulePath(Process pr)
+        try
         {
-            try { return pr.MainModule?.FileName ?? string.Empty; }
-            catch { return string.Empty; }
+            Directory.CreateDirectory(serverRoot);
+            var bat = Path.Combine(serverRoot, "last_launch.cmd");
+            var line = $"\"{exe}\" {args}";
+            File.WriteAllText(bat, line + Environment.NewLine);
+            _log.Info($"[ProcessControl] Launch-CMD geschrieben: {bat}");
         }
-
-        Process? best = null;
-        foreach (var pr in Process.GetProcesses())
+        catch (Exception ex)
         {
-            string name = string.Empty;
-            try { name = pr.ProcessName; } catch { }
-
-            if (!name.StartsWith("DayZServer", StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            var path = SafeMainModulePath(pr);
-            if (string.IsNullOrWhiteSpace(path)) continue;
-
-            if (Path.GetFullPath(path).Equals(Path.GetFullPath(exeFullPath), StringComparison.OrdinalIgnoreCase))
-            {
-                // Nimm den jüngsten Start
-                try
-                {
-                    if (best == null || pr.StartTime > best.StartTime)
-                        best = pr;
-                }
-                catch { best = pr; }
-            }
+            _log.Warn($"[ProcessControl] Konnte Launch-CMD nicht schreiben: {ex.Message}");
         }
-        return best;
     }
 }
