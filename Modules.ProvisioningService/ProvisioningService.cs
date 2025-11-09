@@ -30,6 +30,9 @@ public class ProvisioningService : IProvisioningService
     private const string AppIdDayZServer = "223350";
     private const string AppIdDayZWorkshop = "221100";
 
+    // 🚩 Marker-Datei (nur bei echten Änderungen schreiben/löschen)
+    private const string ChangedMarkerName = ".modupdate.changed";
+
     public ProvisioningService(
         IConfigService config,
         IInstanceRegistry registry,
@@ -54,8 +57,16 @@ public class ProvisioningService : IProvisioningService
         ok = await EnsureInstanceStructureAsync(instanceName);
         if (!ok) return false;
 
-        await DownloadModsAsync(instanceName);
-        await InstallModsToInstanceAsync(instanceName, preferJunction: false);
+        var modsChanged = await DownloadModsAsync(instanceName);      // 🚩 gibt nur geänderte Mods zurück
+        if (modsChanged > 0)
+        {
+            await InstallModsToInstanceAsync(instanceName, preferJunction: false);
+        }
+        else
+        {
+            _log.Info($"[Provision] Mods unverändert für '{instanceName}'. Überspringe Installation.");
+        }
+
         return true;
     }
 
@@ -154,7 +165,18 @@ public class ProvisioningService : IProvisioningService
             var (rc, stdout, stderr) = await RunSteamCmdAsync(steamExe, args, TimeSpan.FromMinutes(30));
             if (rc == 0)
             {
-                _log.Info("[Provision] Server ist installiert/aktualisiert.");
+                // 🚩 Auswertung: Update vs. Already up to date
+                var serverChanged = ParseSteamAppUpdateChanged(stdout, stderr);
+                if (serverChanged)
+                {
+                    _log.Info("[Provision] Server wurde aktualisiert.");
+                    TouchChangedMarker(serverDir);
+                }
+                else
+                {
+                    _log.Info("[Provision] Server ist aktuell (keine Änderungen).");
+                    ClearChangedMarker(serverDir);
+                }
                 return true;
             }
 
@@ -241,7 +263,7 @@ forceSameBuild = 1;
         var steamWorkshopRoot = GetSteamWorkshopRoot(steamExe);
         var login = BuildLoginArgsFromConfigOrEnv();
 
-        var success = 0;
+        var changedCount = 0; // 🚩 nur geänderte Mods zählen
         foreach (var mod in mods)
         {
             long id = mod.WorkshopId;
@@ -252,19 +274,27 @@ forceSameBuild = 1;
             var (rc, so, se) = await RunSteamCmdAsync(steamExe, args, TimeSpan.FromMinutes(20));
             if (rc == 0)
             {
-                // Von Steam-Workshop in unseren Cache spiegeln (Server darf laufen)
+                var changed = ParseWorkshopDownloadChanged(so, se); // 🚩
+                if (!changed)
+                {
+                    _log.Info($"[Provision] Mod {id} bereits aktuell. Kein Download/Spiegel nötig.");
+                    continue; // 🚩 NICHT spiegeln
+                }
+
+                // Von Steam-Workshop in unseren Cache spiegeln (nur bei Änderungen)
                 var src = Path.Combine(steamWorkshopRoot, id.ToString());
                 var dst = Path.Combine(modCacheRoot, id.ToString());
                 if (Directory.Exists(src))
                 {
                     MirrorDirectory(src, dst);
-                    _log.Info($"[Provision] Mod {id} im Cache bereit → {dst}");
+                    _log.Info($"[Provision] Mod {id} (geändert) im Cache aktualisiert → {dst}");
+                    changedCount++;
+                    TouchChangedMarker(inst.ServerRoot); // 🚩 mind. eine Mod geändert → Marker setzen
                 }
                 else
                 {
                     _log.Warn($"[Provision] Workshop-Quelle nicht gefunden für {id}: {src}");
                 }
-                success++;
             }
             else
             {
@@ -273,7 +303,15 @@ forceSameBuild = 1;
             }
         }
 
-        return success;
+        if (changedCount == 0)
+        {
+            // Wenn keine Mods geändert, ggf. Marker löschen (falls nur Mods betrachtet werden)
+            // Den Marker lässt EnsureServerUpToDateAsync selbständig setzen/entfernen.
+            if (!HasChangedMarker(inst.ServerRoot))
+                ClearChangedMarker(inst.ServerRoot);
+        }
+
+        return changedCount;
     }
 
     public Task<int> InstallModsToInstanceAsync(string instanceName, bool preferJunction /*ignored*/)
@@ -311,7 +349,7 @@ forceSameBuild = 1;
             var cacheDir = Path.Combine(modCacheRoot, id.ToString());
             if (!Directory.Exists(cacheDir))
             {
-                _log.Warn($"[Provision] Modcache fehlt für {id}: {cacheDir}");
+                _log.Info($"[Provision] Modcache fehlt oder Mod unverändert – überspringe {id}.");
                 continue;
             }
 
@@ -325,7 +363,7 @@ forceSameBuild = 1;
             {
                 _log.Info($"[Provision] Mod installiert/aktualisiert: {targetName} (neu: {copied}, ersetzt: {overwritten}, fehlgeschlagen: {failed})");
                 installed++;
-                if (overwritten > 0) anyUpdated = true;
+                if (overwritten > 0 || copied > 0) anyUpdated = true;
             }
         }
 
@@ -477,5 +515,62 @@ forceSameBuild = 1;
         Directory.CreateDirectory(destDir);
         // Keine aggressive Löschung → Locks egal; wir überschreiben nur
         OverlayCopy(sourceDir, destDir);
+    }
+
+    // ---------- 🚩 Neu: SteamCMD-Output-Parsing & Marker ----------
+
+    private static bool ParseSteamAppUpdateChanged(string stdout, string stderr)
+    {
+        // Heuristik: "already up to date" => false; "downloading"/"extracting"/"installed" => true
+        var txt = (stdout + "\n" + stderr).ToLowerInvariant();
+        if (txt.Contains("already up to date")) return false;
+        if (txt.Contains("downloading") || txt.Contains("extracting") || txt.Contains("installed")
+            || txt.Contains("success! app") || txt.Contains("fully installed"))
+            return true;
+        // Fallback: wenn nichts Erkennbares, gehen wir konservativ von "keine Änderung" aus
+        return false;
+    }
+
+    private static bool ParseWorkshopDownloadChanged(string stdout, string stderr)
+    {
+        // Heuristik für workshop_download_item:
+        // "Already up to date." => false
+        // "Downloading item" / "Success. Downloaded item" / "Success. Downloaded workshop item" => true
+        var txt = (stdout + "\n" + stderr).ToLowerInvariant();
+        if (txt.Contains("already up to date")) return false;
+        if (txt.Contains("downloading item") || txt.Contains("downloaded item") || txt.Contains("downloaded workshop item")
+            || txt.Contains("extracting"))
+            return true;
+        return false;
+    }
+
+    private static void TouchChangedMarker(string serverRoot)
+    {
+        try
+        {
+            var path = Path.Combine(serverRoot, ChangedMarkerName);
+            File.WriteAllText(path, DateTime.UtcNow.ToString("O"));
+        }
+        catch { /* ignore */ }
+    }
+
+    private static void ClearChangedMarker(string serverRoot)
+    {
+        try
+        {
+            var path = Path.Combine(serverRoot, ChangedMarkerName);
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch { /* ignore */ }
+    }
+
+    private static bool HasChangedMarker(string serverRoot)
+    {
+        try
+        {
+            var path = Path.Combine(serverRoot, ChangedMarkerName);
+            return File.Exists(path);
+        }
+        catch { return false; }
     }
 }

@@ -38,11 +38,12 @@ public static class ServiceConfigurator
         services.AddSingleton<IProcessController, ProcessController>();
         services.AddSingleton<IMonitoringService, MonitoringService>();
         services.AddSingleton<IRconService>(sp =>
-            new RconService(
-                sp.GetRequiredService<IEventBus>(),
-                sp.GetRequiredService<ILogService>(),
-                sp.GetRequiredService<IConfigService>(),
-                dryRun: true));
+    new RconService(
+        sp.GetRequiredService<IEventBus>(),
+        sp.GetRequiredService<ILogService>(),
+        sp.GetRequiredService<IConfigService>(),
+        sp.GetRequiredService<IProcessController>(), // <— neu: Guard gegen nicht laufende Instanz
+        dryRun: true));
         services.AddSingleton<IRestartOrchestrator, RestartOrchestrator>();
         services.AddSingleton<IModUpdateService, ModUpdateService>();
         services.AddSingleton<IDiscordNotifier, DiscordNotifier>();

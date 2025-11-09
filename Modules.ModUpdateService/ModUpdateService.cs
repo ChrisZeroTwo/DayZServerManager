@@ -1,12 +1,13 @@
 ﻿// Path: Modules/ModUpdateService/ModUpdateService.cs
 // File: ModUpdateService.cs
 // Purpose: Periodischer Update-Check (Server + Mods). Nutzt RestartOrchestrator.ScheduleRestart(string,int,int,string).
+//          Optimiert: Restart nur bei echten Änderungen – erkennt diese über Marker-Datei (.modupdate.changed),
+//          die vom ProvisioningService nur bei tatsächlichen Updates gesetzt wird.
 
 using Core.Domain;
 using Core.Domain.DTOs;
 using Core.Domain.Services;
 using Core.Logging;
-using System.Text;
 
 namespace Modules.ModUpdateService;
 
@@ -20,6 +21,9 @@ public class ModUpdateService : IModUpdateService, IDisposable
 
     private CancellationTokenSource? _loopCts;
     private Task? _loopTask;
+
+    // Marker-Datei muss mit ProvisioningService übereinstimmen
+    private const string ChangedMarkerName = ".modupdate.changed";
 
     public bool IsRunning { get; private set; }
 
@@ -58,23 +62,37 @@ public class ModUpdateService : IModUpdateService, IDisposable
 
     public async Task CheckNowAsync(CancellationToken token) => await CheckAllAsync(token);
 
+    /// <summary>
+    /// Manuell: Aktualisiert Mods/Server und plant Neustart nur, wenn der Provisioner echte Änderungen erkannt hat.
+    /// </summary>
     public async Task<bool> UpdateInstanceModsAsync(string instanceName, CancellationToken token)
     {
         var inst = _registry.GetByName(instanceName);
         if (inst is null) { _log.Warn($"[ModUpdate] Unbekannte Instanz '{instanceName}'."); return false; }
 
-        var before = Fingerprint(inst);
-        await _prov.DownloadModsAsync(inst.Name);
-        await _prov.InstallModsToInstanceAsync(inst.Name, preferJunction: false);
-        var after = Fingerprint(inst);
+        // Vorheriger Marker-Zustand (nur für Logs)
+        var markerBefore = HasChangedMarker(inst.ServerRoot);
 
-        var changed = before != after;
-        if (changed)
+        // Reihenfolge: Mods laden/prüfen → installieren (nur bei Änderungen) → Server prüfen
+        // (ProvisioningService führt Downloads/Spiegel nur bei echten Änderungen aus)
+        var modsChanged = await _prov.DownloadModsAsync(inst.Name);
+        if (modsChanged > 0)
+            await _prov.InstallModsToInstanceAsync(inst.Name, preferJunction: false);
+
+        await _prov.EnsureServerUpToDateAsync(inst.Name);
+
+        var markerAfter = HasChangedMarker(inst.ServerRoot);
+
+        if (markerAfter)
         {
-            // Signatur deines Orchestrators: (string, int, int, string)
+            _log.Info($"[ModUpdate] Änderungen erkannt bei '{inst.Name}' (markerBefore={markerBefore}). Plane Neustart.");
             _restart.ScheduleRestart(inst.Name, 60, 60, "Updates installiert");
+            ClearChangedMarker(inst.ServerRoot); // Doppel-Neustarts vermeiden
+            return true;
         }
-        return changed;
+
+        _log.Info($"[ModUpdate] Keine Änderungen für '{inst.Name}'. Kein Neustart.");
+        return false;
     }
 
     private async Task LoopAsync(CancellationToken ct)
@@ -96,6 +114,11 @@ public class ModUpdateService : IModUpdateService, IDisposable
         }
     }
 
+    /// <summary>
+    /// Periodischer Check aller Instanzen:
+    /// - Provisioning führt nur bei echten Änderungen Downloads/Kopien aus (dank SteamCMD-Parsing).
+    /// - Danach prüfen wir den Marker. Nur wenn gesetzt → Restart planen & Marker löschen.
+    /// </summary>
     private async Task CheckAllAsync(CancellationToken ct)
     {
         foreach (var inst in _registry.GetAll())
@@ -104,17 +127,27 @@ public class ModUpdateService : IModUpdateService, IDisposable
 
             try
             {
-                var before = Fingerprint(inst);
+                var markerBefore = HasChangedMarker(inst.ServerRoot);
 
+                // Server prüfen
                 await _prov.EnsureServerUpToDateAsync(inst.Name);
-                await _prov.DownloadModsAsync(inst.Name);
-                await _prov.InstallModsToInstanceAsync(inst.Name, preferJunction: false);
+                // Mods prüfen/ggf. laden (nur bei Änderungen)
+                var modsChanged = await _prov.DownloadModsAsync(inst.Name);
+                // Nur installieren, wenn sich wirklich etwas geändert hat
+                if (modsChanged > 0)
+                    await _prov.InstallModsToInstanceAsync(inst.Name, preferJunction: false);
 
-                var after = Fingerprint(inst);
-                if (before != after)
+                var markerAfter = HasChangedMarker(inst.ServerRoot);
+
+                if (markerAfter)
                 {
-                    _log.Info($"[ModUpdate] Änderungen erkannt bei '{inst.Name}'. Plane Neustart.");
+                    _log.Info($"[ModUpdate] Änderungen erkannt bei '{inst.Name}' (markerBefore={markerBefore}). Plane Neustart.");
                     _restart.ScheduleRestart(inst.Name, 60, 60, "Updates installiert");
+                    ClearChangedMarker(inst.ServerRoot); // wichtig: einmalig konsumieren
+                }
+                else
+                {
+                    _log.Info($"[ModUpdate] Keine Änderungen für '{inst.Name}'. Kein Neustart.");
                 }
             }
             catch (Exception ex)
@@ -124,29 +157,26 @@ public class ModUpdateService : IModUpdateService, IDisposable
         }
     }
 
-    private static string Fingerprint(InstanceInfo inst)
-    {
-        static long SumDir(string? dir)
-        {
-            if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir)) return 0;
-            long s = 0;
-            foreach (var f in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
-            {
-                try { s += File.GetLastWriteTimeUtc(f).Ticks; } catch { }
-            }
-            return s;
-        }
+    // --- Marker-Utilities ---
 
-        long sum = SumDir(inst.ServerRoot);
-        if (inst.Mods != null)
+    private static bool HasChangedMarker(string serverRoot)
+    {
+        try
         {
-            foreach (var m in inst.Mods)
-            {
-                var modDir = Path.Combine(inst.ServerRoot, !string.IsNullOrWhiteSpace(m.Name) ? $"@{m.Name}" : $"@{m.WorkshopId}");
-                sum += SumDir(modDir);
-            }
+            var path = Path.Combine(serverRoot, ChangedMarkerName);
+            return File.Exists(path);
         }
-        return sum.ToString();
+        catch { return false; }
+    }
+
+    private static void ClearChangedMarker(string serverRoot)
+    {
+        try
+        {
+            var path = Path.Combine(serverRoot, ChangedMarkerName);
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch { /* ignore */ }
     }
 
     public void Dispose()

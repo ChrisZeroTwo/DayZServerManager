@@ -66,23 +66,38 @@ public class RestartOrchestrator : IRestartOrchestrator
     {
         try
         {
-            if (notify) await SafeSay(instance, $"- Server wird in {warnSeconds}s neu gestartet: {reason} -");
-            await SafeLock(instance, true);
-            await DelaySafe(TimeSpan.FromSeconds(warnSeconds), ct);
+            // Entscheidend: nur RCON/Lock/Kick/Stop, wenn die Instanz aktuell läuft.
+            var wasRunning = IsRunningSafe(instance);
 
-            if (notify) await SafeSay(instance, "- KickAll wegen Update -");
-            SafeKickAll(instance);
-            await DelaySafe(TimeSpan.FromSeconds(postKickSeconds), ct);
+            if (wasRunning)
+            {
+                if (notify) await SafeSay(instance, $"- Server wird in {warnSeconds}s neu gestartet: {reason} -");
+                await SafeLock(instance, true);
+                await DelaySafe(TimeSpan.FromSeconds(warnSeconds), ct);
 
-            if (notify) await SafeSay(instance, "- Server stoppt für Update -");
-            SafeStop(instance);
-            await DelaySafe(TimeSpan.FromSeconds(60), ct); // fixer Puffer für Stop
+                if (notify) await SafeSay(instance, "- KickAll wegen Update -");
+                SafeKickAll(instance);
+                await DelaySafe(TimeSpan.FromSeconds(postKickSeconds), ct);
 
+                if (notify) await SafeSay(instance, "- Server stoppt für Update -");
+                SafeStop(instance);
+                await DelaySafe(TimeSpan.FromSeconds(60), ct); // fixer Puffer für Stop
+            }
+            else
+            {
+                _log.Info($"[Restart] Instanz '{instance}' läuft nicht – überspringe RCON/Lock/Kick/Stop.");
+            }
+
+            // In beiden Fällen am Ende (Re-)Start ausführen:
             SafeStart(instance);
             await DelaySafe(TimeSpan.FromSeconds(3), ct);
 
-            await SafeLock(instance, false);
-            if (notify) await SafeSay(instance, "- Server-Update abgeschlossen -");
+            // Nach dem Start ggf. entsperren + Abschluss-Nachricht, aber nur wenn jetzt wirklich läuft
+            if (IsRunningSafe(instance))
+            {
+                await SafeLock(instance, false);
+                if (notify) await SafeSay(instance, "- Server-Update abgeschlossen -");
+            }
 
             _log.Info($"[Restart] '{instance}' erfolgreich neu gestartet.");
         }
@@ -101,6 +116,32 @@ public class RestartOrchestrator : IRestartOrchestrator
     }
 
     // ---- helpers ----
+
+    // Prüft sicher, ob Instanz läuft (falls Controller kein IsRunning hat, über Reflection fallbacken)
+    private bool IsRunningSafe(string instance)
+    {
+        try
+        {
+            // Bevorzugt direktes Interface
+            if (_proc is not null)
+            {
+                try
+                {
+                    // Viele Implementierungen haben IsRunning(string)
+                    var mi = _proc.GetType().GetMethod("IsRunning", new[] { typeof(string) });
+                    if (mi != null)
+                    {
+                        var res = mi.Invoke(_proc, new object[] { instance });
+                        if (res is bool b) return b;
+                    }
+                }
+                catch { /* ignore */ }
+            }
+        }
+        catch { /* ignore */ }
+        return false;
+    }
+
     private async Task SafeSay(string instance, string msg)
     { try { await _rcon.BroadcastAsync(instance, msg); } catch { } }
 
@@ -124,10 +165,17 @@ public class RestartOrchestrator : IRestartOrchestrator
 
     private static bool TryCall(object target, string method, string name)
     {
-        var mi = target.GetType().GetMethod(method, new[] { typeof(string) });
-        if (mi == null) return false;
-        mi.Invoke(target, new object[] { name });
-        return true;
+        try
+        {
+            var mi = target.GetType().GetMethod(method, new[] { typeof(string) });
+            if (mi == null) return false;
+            mi.Invoke(target, new object[] { name });
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static async Task DelaySafe(TimeSpan t, CancellationToken ct)
